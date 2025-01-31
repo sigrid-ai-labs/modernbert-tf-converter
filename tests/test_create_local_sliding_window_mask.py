@@ -5,7 +5,7 @@ import pytest
 from ModernGTETFModel import create_local_sliding_window_mask
 
 
-@pytest.mark.parameterize(
+@pytest.mark.parametrize(
     "batch_size, seq_len, window_size",
     [
         (1, 10, 4),  # batch_size 1, sequence_length 10, window_size 4
