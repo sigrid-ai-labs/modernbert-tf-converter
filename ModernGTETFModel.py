@@ -29,7 +29,21 @@ class MultiHeadAttention(keras.layers.Layer):
         self.d_model: int = d_model
         self.num_heads: int = num_heads
         self.layer_id: int = layer_id
+        self.dropout_rate: float = dropout_rate
         self.depth: int = d_model // num_heads  # 각 헤드의 차원
+
+        # layer_id가 0이 아니면 입력 정규화를 적용 (원본 코드에서는 항상 적용함)
+        # 테스트를 위해 minimal한 구현에서는 layer_id 상관없이 Dense 연산만 수행해 봅니다.
+        self.attnNorm = keras.layers.LayerNormalization(epsilon=1e-5, center=False)
+
+        # QKV 프로젝션: 출력 차원은 3 * d_model, bias 없음
+        self.wqkv = keras.layers.Dense(3 * d_model, use_bias=False)
+
+        # 최종 출력 프로젝션. 출력 하는 차원은 d_model
+        self.o = keras.layers.Dense(d_model, use_bias=False)
+
+        # Dropout Layer
+        self.dropout = keras.layers.Dropout(rate=dropout_rate)
 
     def apply_rotary_pos_emb(
         self, q: tf.Tensor, k: tf.Tensor, cos: tf.Tensor, sin: tf.Tensor
@@ -84,7 +98,20 @@ class MultiHeadAttention(keras.layers.Layer):
         :return: Output tensor of shape (batch_size, seq_len, d_model)
         """
 
-        return inputs
+        # Dense 연산을 통해 입력이 변환되므로, minimal 구현보다 입력과 출력가 달라지게 됩니다.
+        # 출력 shape는 여전히 [B, S, d_model]이어야 합니다.
+        # 하지만 QKV 분리와 실제 attention 계산은 아직 없습니다.
+
+        # 입력을 정규화 하는데 항상 적용해봅니다.
+        x = self.attnNorm(inputs=inputs)
+
+        # QKV projection. [B, S, 3 * d_model] shape
+        qkv = self.wqkv(inputs=x)
+
+        # 최종 출력 프로젝션
+        output = self.o(inputs=qkv)
+
+        return self.dropout(inputs=output, training=training) if training else output
 
 
 def create_local_sliding_window_mask(
