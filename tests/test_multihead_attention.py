@@ -36,28 +36,16 @@ def test_ROPE가_존재하지_않는_멀티헤드_어텐션을_테스트한다(
     """
     test_ROPE가_존재하지_않는_멀티헤드_어텐션을_테스트한다: rope_embed 없이 MHA 의 기본 출력을 검증해봅시다.
 
-    Given
-    테스트를 위해 실제 데이터 대신 임의의 값을 가지는 텐서를 생성합니다.
-    입력 텐서가 올바른 shape과 [batch_size, seq_len, d_model] shape 을 가지는지 확인합니다.
-    Transformer 구조에서 핵심이 되는 멀티헤드 어텐션 레이어를 초기화합니다.
-
-    해당 레이어가 주어진 입력 텐서에 대해 올바르게 작동하는지, 즉 QKV 프로젝션, 어텐션 계산, 그리고 최종 출력 프로젝션 등이 제대로 수행되는지 검증합니다.
-    로타리 포지셔널 임베딩(ROTARY positional embedding)에 필요한 cosine과 sine 값을 가지는 텐서를 생성합니다.
-    테스트에서는 임의로 생성된 dummy 값(예: cos 값이 모두 1, sin 값이 모두 0)을 사용하여
-
-    로타리 임베딩이 MultiHeadAttention 내부에서 올바르게 처리되는지를 확인합니다.
-    dummy rope는 MultiHeadAttention 내부의 각 헤드에 적용되도록, [seq_len, 2 * head_dim]와 같은 정확한 shape을 가져야 합니다.
-    해당 레이어가 입력 텐서와 일관된 위치 정보를 사용할 수 있게 합니다.
-
-    When
-    준비한 dummy input tensor, MultiHeadAttention 레이어, 그리고 dummy rope embeddings를 사용하여, 레이어의 forward pass를 수행합니다.
-    로타리 임베딩이 올바르게 적용되어 Query와 Key가 변환되는지
-    변환 후에도 전체 출력의 차원(출력 shape)이 변경되지 않고, 기대한대로 [batch_size, seq_len, d_model] 형태를 유지하는지
-
-    Then
-    MultiHeadAttention 레이어의 호출 결과로 반환되는 텐서는 입력과 동일한 shape, 즉 [batch_size, seq_len, d_model]을 가져야 합니다.
-    멀티헤드 어텐션 레이어는 내부에서 여러 개의 헤드로 나누어 어텐션 연산을 수행하지만, 최종적으로는 출력 차원을 다시 원래의 d_model로 합칩니다.
-    rope embeddings가 적용되었는지 여부와 관계없이, 최종 출력은 입력과 동일한 shape이어야 하며, 이는 Transformer의 기본 설계 원칙 중 하나입니다.
+    Given:
+      - 임의의 값으로 채워진 dummy input tensor (shape: [batch_size, seq_len, d_model]).
+      - d_model은 num_heads로 나누어 떨어지는 값이어야 하며,
+      - MultiHeadAttention 레이어가 주어진 파라미터로 초기화됩니다.
+    When:
+      - 해당 레이어가 mask와 rope_embeds 없이 dummy input에 대해 forward pass를 수행합니다.
+    Then:
+      - 출력 tensor의 shape는 [batch_size, seq_len, d_model]이어야 합니다.
+      - 최종 구현에서는 입력(dummy input)과 비교하여, 내부의 QKV 프로젝션 및 attention, 출력 프로젝션을 통해
+        값이 변환되어야 하므로, output은 dummy input과 거의 동일하지 않아야 합니다.
     """
     # Given : d_model 이 num_heads로 나누어 떨어져야만 합니다.
     if d_model % num_heads != 0:
@@ -91,6 +79,12 @@ def test_ROPE가_존재하지_않는_멀티헤드_어텐션을_테스트한다(
     np.testing.assert_allclose(
         output.numpy(), output.numpy(), err_msg="Output values are not consistent."
     )
+
+    # Then : 만약 layer_id가 0이 아니라면, 실제 어텐션의 연산과 출력 프로젝션이 적용되어 dummy_input 과 output이 달라져야 합니다.
+    if np.allclose(dummy_input.numpy(), output.numpy(), atol=1e-6):
+        pytest.fail(
+            "Output is almost identical to input; transformation did not occur as expected."
+        )
 
     # ------------------------------------------------------------------------------------------------ #
 
