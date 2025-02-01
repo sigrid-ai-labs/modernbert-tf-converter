@@ -1,4 +1,83 @@
+import keras
 import tensorflow as tf
+
+
+class MultiHeadAttention(keras.layers.Layer):
+    def __init__(
+        self,
+        d_model: int,
+        num_heads: int,
+        dropout_rate: float = 0.1,
+        layer_id: int = 0,
+        **kwargs,
+    ) -> None:
+        """
+        Initializes the MultiHeadAttention layer.
+
+        :param d_model: 모델의 전체 차원
+        :param num_heads: 멀티헤드 어텐션에서의 헤드 개수
+        :param dropout_rate: 드롭아웃 비율
+        :param layer_id: 레이어의 식별자 (예: 0이면 첫 번째 레이어, 0이 아니면 Layer Normalization 적용)
+        :param kwargs: 추가적인 keyword arguments
+        """
+        super().__init__(**kwargs)
+
+        raise NotImplementedError()
+
+    def apply_rotary_pos_emb(
+        self, q: tf.Tensor, k: tf.Tensor, cos: tf.Tensor, sin: tf.Tensor
+    ) -> tuple[tf.Tensor, tf.Tensor]:
+        """
+        Applies the rotary positional embedding to query and key tensors.
+
+        :param q: Query tensor
+        :param k: Key tensor
+        :param cos: Cosine tensor for rotary embedding
+        :param sin: Sine tensor for rotary embedding
+        :return: Tuple containing modified query and key tensors (q_embed, k_embed)
+        """
+
+        raise NotImplementedError()
+
+    def scaled_dot_product_attention(
+        self,
+        query: tf.Tensor,
+        key: tf.Tensor,
+        value: tf.Tensor,
+        mask: tf.Tensor | None = None,
+        training: bool | None = None,
+    ) -> tf.Tensor:
+        """
+        Computes the scaled dot-product attention.
+
+        :param query: Query tensor of shape (..., seq_len_q, depth)
+        :param key: Key tensor of shape (..., seq_len_k, depth)
+        :param value: Value tensor of shape (..., seq_len_v, depth_v)
+        :param mask: Optional attention mask tensor
+        :param training: Boolean flag indicating training mode
+        :return: Tensor resulting from the attention operation
+        """
+
+        raise NotImplementedError()
+
+    def call(
+        self,
+        inputs: tf.Tensor,
+        mask: tf.Tensor | None = None,
+        rope_embeds: tuple[tf.Tensor, tf.Tensor] | None = None,
+        training: bool = False,
+    ) -> tf.Tensor:
+        """
+        Performs the forward pass of the MultiHeadAttention layer.
+
+        :param inputs: Input tensor of shape (batch_size, seq_len, d_model)
+        :param mask: Optional mask tensor of shape (batch_size, 1, seq_len, seq_len)
+        :param rope_embeds: Optional tuple (cos, sin) for rotary positional embeddings
+        :param training: Boolean flag indicating whether the layer is in training mode
+        :return: Output tensor of shape (batch_size, seq_len, d_model)
+        """
+
+        raise NotImplementedError()
 
 
 def create_local_sliding_window_mask(
