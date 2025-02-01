@@ -33,13 +33,17 @@ class MultiHeadAttention(keras.layers.Layer):
         self.depth: int = d_model // num_heads  # 각 헤드의 차원
 
         # layer_id가 0이 아니면 입력 정규화를 적용 (원본 코드에서는 항상 적용함)
-        # 테스트를 위해 minimal한 구현에서는 layer_id 상관없이 Dense 연산만 수행해 봅니다.
+        # 여기서는 minimal 구현 단계에서는 layer_id에 관계없이 단순히 Dense 연산을 수행하도록 할 수 있지만,
+        # 최종 구현에서는 입력을 정규화한 후 QKV 프로젝션을 진행하게 됩니다.
         self.attnNorm = keras.layers.LayerNormalization(epsilon=1e-5, center=False)
 
         # QKV 프로젝션: 출력 차원은 3 * d_model, bias 없음
+        # 출력 차원이 3 * d_model인 이유는 입력 텐서로부터 한 번의 Dense 연산으로 Q, K, V 세 가지 벡터를 동시에 얻기 위함입니다.
         self.wqkv = keras.layers.Dense(3 * d_model, use_bias=False)
 
         # 최종 출력 프로젝션. 출력 하는 차원은 d_model
+        # 최종 어텐션 결과를 다시 원래의 차원인 d_model로 투영(projection)하기 위한 Dense 레이어입니다.
+        # 이 과정을 통해 멀티헤드 어텐션의 여러 헤드에서 나온 결과를 하나의 텐서로 합칩니다.
         self.o = keras.layers.Dense(d_model, use_bias=False)
 
         # Dropout Layer

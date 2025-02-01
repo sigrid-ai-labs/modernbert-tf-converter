@@ -86,19 +86,60 @@ def test_ROPE가_존재하지_않는_멀티헤드_어텐션을_테스트한다(
             "Output is almost identical to input; transformation did not occur as expected."
         )
 
-    # ------------------------------------------------------------------------------------------------ #
 
-    # Given : 각 헤드의 차원을 계산합니다.
-    # head_dim: int = d_model // num_heads
+@pytest.mark.parametrize(
+    "batch_size, seq_len, d_model, num_heads",
+    [
+        (1, 10, 64, 8),  # Case 1: 간단한 설정
+        (2, 15, 128, 8),  # Case 2: 조금 더 큰 설정
+    ],
+)
+def test_ROPE가_존재하는_멀티헤드_어텐션을_테스트한다(
+    batch_size, seq_len, d_model, num_heads
+):
+    """
+    Given a dummy input tensor and a MultiHeadAttention layer,
+      and given dummy rope embeddings (cos, sin) with the correct shape,
+    When the layer is invoked with these rope embeddings,
+    Then the output tensor should have the same shape as (batch_size, seq_len, d_model).
+    """
+    # Given: d_model이 num_heads로 나누어 떨어져야 합니다.
+    if d_model % num_heads != 0:
+        pytest.skip("d_model must be divisible by num_heads")
 
-    # Given : rope_embeds를 위한 dummy cos, sin 텐서를 생성해봅시다. dummy_cos 의 모든 값은 1이고, dummy_sin 의 모든 값은 0 입니다.
-    # rotary 임베딩에서는 각 헤드의 차원을 두 부분으로 나누어 처리하는데, 일반적으로 절반은 원래 값이고 나머지 절반은 rotation 적용을 위해 씁니다.
-    # shape 가 (seq_len, 2 * head_dim) 인 Tensor 를 생성하고 그 모든 요소를 1로 채웁니다. 각 위치마다 1이 들어있는 2배 크기의 값을 만듭니다.
-    # dummy_cos = tf.ones((seq_len, 2 * head_dim), dtype=tf.float32)
-    # dummy_sin = tf.zeros((seq_len, 2 * head_dim), dtype=tf.float32)
+    # Given: 입력 텐서를 무작위로 생성 (shape: [batch_size, seq_len, d_model])
+    dummy_input = tf.random.uniform((batch_size, seq_len, d_model), dtype=tf.float32)
+
+    # Given: dropout 없이, layer_id=1 (즉, 로타리 임베딩 적용 케이스)로 MultiHeadAttention 인스턴스를 생성합니다.
+    mha = MultiHeadAttention(d_model, num_heads, dropout_rate=0.0, layer_id=1)
+
+    # Given: 각 헤드의 차원 계산 (d_model // num_heads)
+    head_dim = d_model // num_heads
+    # Given: rope_embeds를 위한 더미 cos, sin 텐서를 생성합니다.
+    # - 기대하는 rope_embeds의 shape는 [seq_len, 2 * head_dim]
 
     # Q: dummy_cos 가 모두 1 이라는 cosine tensor 의 의미는 ?
     # 실제로는 각 토큰의 위치가 cos 값에 따라 달라지겠지만, 더미 값으로 모든 위치를 1을 반환하게 해서 회전 효과가 없다는 것을 테스트한다.
 
     # Q: dummy_sin 이 모두 0 인 sin tensor 의 의미는 ?
     # 실제로는 임베딩이 sine 값 이 위치에 따라 달라지지만 모든 값을 0 으로 반환하게 해서 회전 효과가 없다는 것을 테스트한다.
+
+    dummy_cos = tf.ones((seq_len, 2 * head_dim), dtype=tf.float32)  # 모든 값 1
+    dummy_sin = tf.zeros((seq_len, 2 * head_dim), dtype=tf.float32)  # 모든 값 0
+    rope_embeds = (dummy_cos, dummy_sin)
+
+    # When: rope_embeds를 포함하여 MultiHeadAttention 레이어를 호출합니다.
+    output = mha(dummy_input, mask=None, rope_embeds=rope_embeds, training=False)
+
+    # Then: 출력 텐서의 shape가 (batch_size, seq_len, d_model)와 동일해야 합니다.
+    expected_shape = (batch_size, seq_len, d_model)
+    assert (
+        output.shape == expected_shape
+    ), f"Output shape mismatch with rope_embeds: expected {expected_shape}, got {output.shape}"
+
+    # 그리고, 함수형 검증 도구를 활용하여 출력값의 일관성을 확인합니다.
+    np.testing.assert_allclose(
+        output.numpy(),
+        output.numpy(),
+        err_msg="Output values are inconsistent when using rope_embeds.",
+    )
