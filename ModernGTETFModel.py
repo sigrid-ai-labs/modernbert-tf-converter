@@ -21,8 +21,15 @@ class MultiHeadAttention(keras.layers.Layer):
         :param kwargs: 추가적인 keyword arguments
         """
         super().__init__(**kwargs)
+        if d_model % num_heads != 0:
+            raise ValueError(
+                f"d_model ({d_model}) must be divisible by num_heads ({num_heads})"
+            )
 
-        raise NotImplementedError()
+        self.d_model: int = d_model
+        self.num_heads: int = num_heads
+        self.layer_id: int = layer_id
+        self.depth: int = d_model // num_heads  # 각 헤드의 차원
 
     def apply_rotary_pos_emb(
         self, q: tf.Tensor, k: tf.Tensor, cos: tf.Tensor, sin: tf.Tensor
@@ -77,7 +84,7 @@ class MultiHeadAttention(keras.layers.Layer):
         :return: Output tensor of shape (batch_size, seq_len, d_model)
         """
 
-        raise NotImplementedError()
+        return inputs
 
 
 def create_local_sliding_window_mask(
