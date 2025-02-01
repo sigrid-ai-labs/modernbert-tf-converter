@@ -109,11 +109,56 @@ class MultiHeadAttention(keras.layers.Layer):
         # 입력을 정규화 하는데 항상 적용해봅니다.
         x = self.attnNorm(inputs=inputs)
 
+        # 입력 텐서의 shape가 [B, S, d_model] 에서, Dense 레이어를 통해 한 번에 Query, Key, Value를 계산하면
+        # 결과는 [B, S, 3 * d_model]이 됩니다.
+        # 여기서 3은 Q, K, V를 한 번에 계산했기 때문에 붙은 차원입니다.
         # QKV projection. [B, S, 3 * d_model] shape
         qkv = self.wqkv(inputs=x)
 
+        batch_size = tf.shape(inputs)[0]
+        seq_len = tf.shape(inputs)[1]
+
+        # reshape: [B, S, 3, num_heads, depth]
+        # 우리는 각 Q, K, V를 여러 헤드로 분할하여 병렬로 어텐션을 계산하려고 합니다.
+        # 이를 위해, 전체 d_model을 num_heads개의 헤드로 나누면 각 헤드의 차원은
+        # depth = d_model / num_heads가 됩니다.
+
+        # 우리는 각 Q, K, V를 여러 헤드로 분할하여 병렬로 어텐션을 계산하려고 합니다.
+        # 이를 위해, 전체 d_model을 num_heads개의 헤드로 나누면 각 헤드의 차원은
+        # depth = d_model / num_heads가 됩니다.
+        # Dense의 출력 [B, S, 3*d_model]을 [B, S, 3, num_heads, depth]로 reshape하면,
+        # 마지막 두 차원으로 나눠서 각 헤드의 정보를 분리할 수 있습니다.
+        # 이 때, 3이라는 차원은 Q, K, V를 구분하기 위한 것입니다.
+        qkv = tf.reshape(qkv, [batch_size, seq_len, 3, self.num_heads, self.depth])
+
+        # transpose: [3, B, num_heads, S, depth]
+        # tf.transpose(qkv, perm=[2, 0, 3, 1, 4])를 수행하면
+        # 첫 번째 차원이 3이 되어 Q, K, V를 구분하기 쉬워집니다.
+        # 이때 각 텐서의 shape는
+        # Q: [B, num_heads, S, depth]
+        # K: [B, num_heads, S, depth]
+        # V: [B, num_heads, S, depth]
+        # 이렇게 하면 어텐션 연산(예를 들어, Query와 Key의 내적 계산)을 헤드 단위로 병렬 처리하기 용이해집니다.
+        qkv = tf.transpose(qkv, perm=[2, 0, 3, 1, 4])
+
+        # tf.unstack(qkv, axis=0)를 사용하여, 첫 번째 차원(3)을 기준으로 Q, K, V를 분리합니다.
+        # 분리된 각 텐서의 shape는 [B, num_heads, S, depth]가 됩니다.
+        q, k, v = tf.unstack(qkv, axis=0)
+
+        # Step 3: 실제 어텐션 계산 전, 단순히 v 텐서를 사용하여 출력 구성
+        # 원래 [B, num_heads, S, depth]에서
+        # [B, S, num_heads, depth]로 재배열되어, 시퀀스 차원 S가 헤드 차원보다 앞쪽에 오게 됩니다.
+        v_transposed = tf.transpose(v, perm=[0, 2, 1, 3])
+
+        # reshape: [B, S, d_model]
+        # v_transposed의 마지막 두 차원인 [num_heads, depth]를 하나의 차원으로 결합합니다.
+        # Transformer의 최종 출력은 각 토큰마다 하나의 벡터가 되어야 하며, 이 벡터의 차원은 원래 모델 차원 d_model이어야 합니다.
+        # 이 과정이 바로 여러 헤드의 결과를 하나의 텐서로 결합하는 역할을 합니다.
+        # 따라서 reshape을 통해 [B, S, num_heads * depth] → [B, S, d_model] 으로 만듭니다.
+        attention_output = tf.reshape(v_transposed, [batch_size, seq_len, self.d_model])
+
         # 최종 출력 프로젝션
-        output = self.o(inputs=qkv)
+        output = self.o(inputs=attention_output)
 
         return self.dropout(inputs=output, training=training) if training else output
 
