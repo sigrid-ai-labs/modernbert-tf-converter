@@ -96,8 +96,8 @@ class MultiHeadAttention(keras.layers.Layer):
 
         # tf.shape(q)[2]는 q 텐서의 세 번째 차원, 즉 시퀀스 길이 S를 나타냅니다.
         # 첫 번째와 두 번째 차원은 그대로 유지하고, 세 번째 차원에서 처음 seq_len (즉, tf.shape(q)[2]) 개의 값만 선택합니다.
-        cos = cos[:, :, :tf.shape(q)[2], :]
-        sin = sin[:, :, :tf.shape(q)[2], :]
+        cos = cos[:, :, : tf.shape(q)[2], :]
+        sin = sin[:, :, : tf.shape(q)[2], :]
 
         # 이제 rotary positional embedding을 적용합니다.
         # 각 query 벡터에 대해, cosine 값과 sine 값을 사용하여 회전 변환을 수행합니다.
@@ -112,7 +112,6 @@ class MultiHeadAttention(keras.layers.Layer):
         # 최종적으로, 변환된 query와 key 텐서를 반환합니다.
         return q_embed, k_embed
 
-
     def scaled_dot_product_attention(
         self,
         query: tf.Tensor,
@@ -123,16 +122,63 @@ class MultiHeadAttention(keras.layers.Layer):
     ) -> tf.Tensor:
         """
         Computes the scaled dot-product attention.
+        query, key: [B, num_heads, S, head_dim], value: [B, num_heads, S, head_dim]
 
         :param query: Query tensor of shape (..., seq_len_q, depth)
         :param key: Key tensor of shape (..., seq_len_k, depth)
+        - 각각 [배치 크기(B), 헤드 수(num_heads), 시퀀스 길이(S), 각 헤드의 차원(head_dim)]의 텐서입니다.
+
         :param value: Value tensor of shape (..., seq_len_v, depth_v)
+        - [B, num_heads, S, head_dim] 형태의 텐서입니다.
+
         :param mask: Optional attention mask tensor
         :param training: Boolean flag indicating training mode
         :return: Tensor resulting from the attention operation
         """
 
-        raise NotImplementedError()
+        # 1. query와 key의 내적: [B, num_heads, S, S]
+        # 여기서 transpose_b=True는 key 텐서의 마지막 두 차원을 전치(transpose)하여 곱셈을 수행함을 의미합니다.
+        # 내적을 계산하기 위해 Query 벡터는 [B, num_heads, S, head_dim]이고
+        # Key 벡터는 내적 대상의 각 요소와 곱해질 수 있도록 마지막 두 차원이 전치되어 [B, num_heads, head_dim, S] 형태가 되어야 합니다.
+        # 결과 텐서의 shape는 [B, num_heads, S, S]가 됩니다.
+        # → 각 배치와 각 헤드별로 query의 각 시퀀스 토큰이 key의 각 시퀀스 토큰과 얼마나 관련 있는지를 나타내는 점수(score) 행렬을 생성합니다.
+        matmul_qk: tf.Tensor = tf.matmul(query, key, transpose_b=True)
+
+        # Scaling: key 텐서의 마지막 차원(즉, head_dim)을 얻습니다.
+        head_dim: int = tf.shape(key)[-1]
+
+        # Transformer의 점곱 어텐션(Scaled Dot-Product Attention)에서,
+        # query와 key의 내적 값은 각 벡터의 차원 수에 비례하여 커지는 경향이 있습니다.
+        # 이로 인해 softmax 함수에 입력되는 값들이 너무 커져서, 기울기 소실 문제가 발생할 수 있습니다.
+        # 따라서, 내적 결과를 sqrt(dk) 로 나누어 스케일링(scaling)하는데, 이때 dk가 바로 각 key 벡터의 차원입니다.
+        dk = tf.cast(head_dim, dtype=query.dtype)  # dimension of key
+
+        # 이 연산은 내적 값이 너무 커지는 것을 sqrt(dk) 로 방지하여 softmax 연산 시 안정성을 높여줍니다.
+        scaled_logits: tf.Tensor = matmul_qk / tf.math.sqrt(dk)
+
+        # 결과는 scaled_logits에 저장되며, 여전히 shape은 [B, num_heads, S, S]입니다.
+        # 마스크가 주어지면 추가 (mask는 보통 -∞ 또는 0.0으로 구성됨)
+        scaled_logits += mask if mask is not None else 0
+
+        # tf.nn.softmax를 사용하여, 스케일된 logits에 대해 softmax를 적용합니다.
+        # axis=-1로 지정하여 마지막 차원(즉, 각 query 토큰에 대해 모든 key 토큰에 걸친 점수)에 대해 확률 분포를 만듭니다.
+        # 이 결과는 각 query 토큰이 key의 각 토큰에 얼마나 집중해야 하는지를 나타내는 어텐션 가중치(attention_weights)가 됩니다.
+        # shape은 여전히 [B, num_heads, S, S]입니다.
+        attention_weights = tf.nn.softmax(scaled_logits, axis=-1)
+
+        # 학습(training) 모드일 경우, 어텐션 가중치에 dropout을 적용하여 오버피팅(overfitting)을 방지합니다.
+        # self.dropout은 생성자에서 설정한 dropout 레이어로, 지정된 dropout 비율에 따라 무작위로 일부 가중치를 0으로 만듭니다.
+        # 이 과정은 모델의 일반화 성능을 향상시킵니다.
+        attention_weights = (
+            self.dropout(attention_weights, training=training)
+            if training
+            else attention_weights
+        )
+
+        # 최종 어텐션 가중치(attention_weights)와 value 텐서를 행렬 곱셈(tf.matmul)하여 최종 어텐션 출력을 계산합니다.
+        # 이 연산은 각 query 토큰에 대해, key와의 유사도에 따라 value들의 가중 평균(weighted sum)을 계산하는 것과 같습니다.
+        # 최종 출력의 shape는 [B, num_heads, S, head_dim]가 됩니다.
+        return tf.matmul(attention_weights, value)
 
     def call(
         self,
@@ -151,65 +197,63 @@ class MultiHeadAttention(keras.layers.Layer):
         :return: Output tensor of shape (batch_size, seq_len, d_model)
         """
 
-        # Dense 연산을 통해 입력이 변환되므로, minimal 구현보다 입력과 출력가 달라지게 됩니다.
-        # 출력 shape는 여전히 [B, S, d_model]이어야 합니다.
-        # 하지만 QKV 분리와 실제 attention 계산은 아직 없습니다.
-
-        # 입력을 정규화 하는데 항상 적용해봅니다.
-        x = self.attnNorm(inputs=inputs)
-
-        # 입력 텐서의 shape가 [B, S, d_model] 에서, Dense 레이어를 통해 한 번에 Query, Key, Value를 계산하면
-        # 결과는 [B, S, 3 * d_model]이 됩니다.
-        # 여기서 3은 Q, K, V를 한 번에 계산했기 때문에 붙은 차원입니다.
-        # QKV projection. [B, S, 3 * d_model] shape
-        qkv = self.wqkv(inputs=x)
-
         batch_size = tf.shape(inputs)[0]
         seq_len = tf.shape(inputs)[1]
 
-        # reshape: [B, S, 3, num_heads, depth]
-        # 우리는 각 Q, K, V를 여러 헤드로 분할하여 병렬로 어텐션을 계산하려고 합니다.
-        # 이를 위해, 전체 d_model을 num_heads개의 헤드로 나누면 각 헤드의 차원은
-        # depth = d_model / num_heads가 됩니다.
+        # 1. 입력 정규화
+        x = self.attnNorm(inputs)
 
-        # 우리는 각 Q, K, V를 여러 헤드로 분할하여 병렬로 어텐션을 계산하려고 합니다.
-        # 이를 위해, 전체 d_model을 num_heads개의 헤드로 나누면 각 헤드의 차원은
-        # depth = d_model / num_heads가 됩니다.
-        # Dense의 출력 [B, S, 3*d_model]을 [B, S, 3, num_heads, depth]로 reshape하면,
-        # 마지막 두 차원으로 나눠서 각 헤드의 정보를 분리할 수 있습니다.
-        # 이 때, 3이라는 차원은 Q, K, V를 구분하기 위한 것입니다.
-        qkv = tf.reshape(qkv, [batch_size, seq_len, 3, self.num_heads, self.depth])
+        # 2. QKV 프로젝션: [B, S, 3*d_model]
+        qkv = self.wqkv(x)
 
-        # transpose: [3, B, num_heads, S, depth]
-        # tf.transpose(qkv, perm=[2, 0, 3, 1, 4])를 수행하면
-        # 첫 번째 차원이 3이 되어 Q, K, V를 구분하기 쉬워집니다.
-        # 이때 각 텐서의 shape는
-        # Q: [B, num_heads, S, depth]
-        # K: [B, num_heads, S, depth]
-        # V: [B, num_heads, S, depth]
-        # 이렇게 하면 어텐션 연산(예를 들어, Query와 Key의 내적 계산)을 헤드 단위로 병렬 처리하기 용이해집니다.
+        # 3. reshape: [B, S, 3, num_heads, head_dim]
+        # 위에서 얻은 qkv 텐서의 shape는 [B, S, 3*d_model]인데,
+        # 이를 [B, S, 3, num_heads, head_dim]로 reshape합니다.
+        # 여기서, d_model = num_heads * head_dim이므로,
+        # 이 reshape를 통해 Query, Key, Value 각각을 분리하고, 동시에 여러 헤드로 나누기 위한 준비를 합니다.
+        qkv = tf.reshape(qkv, [batch_size, seq_len, 3, self.num_heads, self.head_dim])
+
+        # 4. transpose: [3, B, num_heads, S, head_dim]
+        # tf.transpose를 사용해 텐서의 차원을 재배열합니다.
+        # 여기서는 첫 번째 차원(인덱스 2)이 3개의 Q, K, V를 구분하는 차원으로 오게 하여,
+        # 나중에 tf.unstack을 통해 쉽게 분리할 수 있도록 합니다.
+        # 결과적으로, 텐서의 shape는 [3, B, num_heads, S, head_dim]가 됩니다.
         qkv = tf.transpose(qkv, perm=[2, 0, 3, 1, 4])
 
-        # tf.unstack(qkv, axis=0)를 사용하여, 첫 번째 차원(3)을 기준으로 Q, K, V를 분리합니다.
-        # 분리된 각 텐서의 shape는 [B, num_heads, S, depth]가 됩니다.
+        # 5. q, k, v 분리: 각각 [B, num_heads, S, head_dim]
+        # tf.unstack을 사용하여, 첫 번째 차원(크기 3)을 따라 텐서를 분리합니다.
+        # 이로써 각각의 q, k, v 텐서의 shape는 [B, num_heads, S, head_dim]가 됩니다.
+        # 이제 각 헤드별로 attention 연산을 수행할 수 있는 준비가 완료됩니다.
         q, k, v = tf.unstack(qkv, axis=0)
 
-        # Step 3: 실제 어텐션 계산 전, 단순히 v 텐서를 사용하여 출력 구성
-        # 원래 [B, num_heads, S, depth]에서
-        # [B, S, num_heads, depth]로 재배열되어, 시퀀스 차원 S가 헤드 차원보다 앞쪽에 오게 됩니다.
-        v_transposed = tf.transpose(v, perm=[0, 2, 1, 3])
+        # 6. rope_embeds 처리: 만약 rope_embeds (로타리 임베딩 값)가 제공되면,
+        # self.apply_rotary_pos_emb 메서드를 호출하여 Query와 Key에 로타리 임베딩을 적용합니다.
+        if rope_embeds is not None:
+            cos, sin = rope_embeds
+            q, k = self.apply_rotary_pos_emb(q, k, cos, sin)
 
-        # reshape: [B, S, d_model]
-        # v_transposed의 마지막 두 차원인 [num_heads, depth]를 하나의 차원으로 결합합니다.
-        # Transformer의 최종 출력은 각 토큰마다 하나의 벡터가 되어야 하며, 이 벡터의 차원은 원래 모델 차원 d_model이어야 합니다.
-        # 이 과정이 바로 여러 헤드의 결과를 하나의 텐서로 결합하는 역할을 합니다.
-        # 따라서 reshape을 통해 [B, S, num_heads * depth] → [B, S, d_model] 으로 만듭니다.
-        attention_output = tf.reshape(v_transposed, [batch_size, seq_len, self.d_model])
+        # 7. mask 처리: mask가 [B, 1, S, S]인 경우, head 차원에 브로드캐스트되도록 reshape
+        if mask is not None:
+            mask = tf.reshape(mask, [tf.shape(mask)[0], 1, seq_len, seq_len])
 
-        # 최종 출력 프로젝션
-        output = self.o(inputs=attention_output)
+        # 8. Scaled Dot-Product Attention 적용: 결과 shape [B, num_heads, S, head_dim]
+        attention_output = self.scaled_dot_product_attention(
+            q, k, v, mask=mask, training=training
+        )
 
-        return self.dropout(inputs=output, training=training) if training else output
+        # 9. transpose: [B, S, num_heads, head_dim]
+        attention_output = tf.transpose(attention_output, perm=[0, 2, 1, 3])
+
+        # 10. reshape: [B, S, d_model]
+        attention_output = tf.reshape(
+            attention_output, [batch_size, seq_len, self.d_model]
+        )
+
+        # 11. 최종 출력 프로젝션
+        output = self.o(attention_output)
+        if training:
+            output = self.dropout(output, training=training)
+        return output
 
 
 def create_local_sliding_window_mask(
