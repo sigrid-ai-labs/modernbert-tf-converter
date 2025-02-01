@@ -143,3 +143,132 @@ def test_ROPE가_존재하는_멀티헤드_어텐션을_테스트한다(
         output.numpy(),
         err_msg="Output values are inconsistent when using rope_embeds.",
     )
+
+
+@pytest.mark.parametrize(
+    "batch_size, seq_len, d_model, num_heads",
+    [
+        (1, 10, 64, 8),
+        (2, 15, 128, 8),
+    ],
+)
+def test_ROPE가_결과값에_영향을_미치는지_확인한다(
+    batch_size, seq_len, d_model, num_heads
+):
+    """
+    Given:
+      - A dummy input tensor of shape [batch_size, seq_len, d_model] and a MultiHeadAttention layer (layer_id=1).
+      - Dummy rope embeddings with non-trivial random values.
+    When:
+      - The layer is invoked with rope_embeds and without rope_embeds.
+    Then:
+      - The outputs should differ, demonstrating that rope embeddings are applied.
+    """
+    # Given: dummy input 생성
+    dummy_input = tf.random.uniform((batch_size, seq_len, d_model), dtype=tf.float32)
+
+    # And: MultiHeadAttention 레이어 생성 (layer_id=1)
+    mha = MultiHeadAttention(d_model, num_heads, dropout_rate=0.0, layer_id=1)
+
+    # When: rope_embeds 없이 호출
+    output_no_rope = mha(
+        inputs=dummy_input, mask=None, rope_embeds=None, training=False
+    )
+
+    # And: non-trivial dummy rope embeddings 생성
+    head_dim = d_model // num_heads
+    dummy_cos = tf.random.uniform((seq_len, 2 * head_dim), dtype=tf.float32)
+    dummy_sin = tf.random.uniform((seq_len, 2 * head_dim), dtype=tf.float32)
+    rope_embeds = (dummy_cos, dummy_sin)
+
+    # When: rope_embeds를 적용하여 호출
+    output_with_rope = mha(
+        inputs=dummy_input, mask=None, rope_embeds=rope_embeds, training=False
+    )
+
+    # Then: 두 출력은 거의 동일하면 안 되어야 합니다.
+    assert not np.allclose(
+        output_no_rope.numpy(), output_with_rope.numpy(), atol=1e-6
+    ), "Output with rope_embeds should differ from output without rope_embeds."
+
+
+@pytest.mark.parametrize(
+    "batch_size, num_heads, seq_len, head_dim",
+    [
+        (2, 4, 10, 16),
+        (1, 8, 12, 8),
+    ],
+)
+def test_scaled_dot_product_attention(batch_size, num_heads, seq_len, head_dim):
+    """
+    Given:
+      - Dummy query, key, and value tensors of shape [batch_size, num_heads, seq_len, head_dim].
+    When:
+      - The scaled_dot_product_attention method is invoked with these tensors (mask=None, training=False).
+    Then:
+      - The output tensor should have shape [batch_size, num_heads, seq_len, head_dim].
+    """
+    # Given: dummy query, key, value 생성
+    q = tf.random.uniform((batch_size, num_heads, seq_len, head_dim), dtype=tf.float32)
+    k = tf.random.uniform((batch_size, num_heads, seq_len, head_dim), dtype=tf.float32)
+    v = tf.random.uniform((batch_size, num_heads, seq_len, head_dim), dtype=tf.float32)
+
+    # And: MultiHeadAttention 레이어를 생성 (d_model = num_heads * head_dim)
+    mha = MultiHeadAttention(
+        d_model=num_heads * head_dim, num_heads=num_heads, dropout_rate=0.0, layer_id=1
+    )
+
+    # When: scaled_dot_product_attention 호출
+    output = mha.scaled_dot_product_attention(q, k, v, mask=None, training=False)
+
+    # Then: 출력 shape가 [batch_size, num_heads, seq_len, head_dim]인지 검증
+    expected_shape = (batch_size, num_heads, seq_len, head_dim)
+    assert (
+        output.shape == expected_shape
+    ), f"Expected shape {expected_shape}, got {output.shape}"
+
+
+@pytest.mark.parametrize(
+    "batch_size, num_heads, seq_len, head_dim",
+    [
+        (2, 4, 10, 16),
+        (1, 8, 12, 8),
+    ],
+)
+def test_apply_rotary_pos_emb(batch_size, num_heads, seq_len, head_dim):
+    """
+    Given:
+      - Dummy query and key tensors of shape [batch_size, num_heads, seq_len, head_dim],
+      - Dummy rope embeddings (cos: all ones, sin: all zeros) of shape [seq_len, 2 * head_dim].
+    When:
+      - apply_rotary_pos_emb is invoked with these dummy rope embeddings.
+    Then:
+      - The returned q and k tensors must have the same shape as input.
+      - With dummy_cos=1 and dummy_sin=0, the rotation effect is null, so q and k should remain unchanged.
+    """
+    # Given: dummy q, k 생성
+    q = tf.random.uniform((batch_size, num_heads, seq_len, head_dim), dtype=tf.float32)
+    k = tf.random.uniform((batch_size, num_heads, seq_len, head_dim), dtype=tf.float32)
+
+    # And: Dummy rope embeddings 생성 (cos는 모두 1, sin은 모두 0)
+    dummy_cos = tf.ones((seq_len, 2 * head_dim), dtype=tf.float32)
+    dummy_sin = tf.zeros((seq_len, 2 * head_dim), dtype=tf.float32)
+
+    mha = MultiHeadAttention(
+        d_model=num_heads * head_dim, num_heads=num_heads, dropout_rate=0.0, layer_id=1
+    )
+
+    # When: apply_rotary_pos_emb 호출
+    q_new, k_new = mha.apply_rotary_pos_emb(q, k, dummy_cos, dummy_sin)
+
+    # Then: 반환된 q_new, k_new의 shape가 원래 q, k와 동일해야 함
+    assert q_new.shape == q.shape, f"Expected q shape {q.shape}, got {q_new.shape}"
+    assert k_new.shape == k.shape, f"Expected k shape {k.shape}, got {k_new.shape}"
+
+    # Then: dummy rope embeddings (cos=1, sin=0)이므로 회전 효과가 없어야 하므로 값이 그대로여야 합니다.
+    np.testing.assert_allclose(
+        q_new.numpy(), q.numpy(), atol=1e-6, err_msg="q values differ with dummy rope"
+    )
+    np.testing.assert_allclose(
+        k_new.numpy(), k.numpy(), atol=1e-6, err_msg="k values differ with dummy rope"
+    )
