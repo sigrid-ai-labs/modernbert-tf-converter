@@ -31,6 +31,7 @@ class MultiHeadAttention(keras.layers.Layer):
         self.layer_id: int = layer_id
         self.dropout_rate: float = dropout_rate
         self.depth: int = d_model // num_heads  # 각 헤드의 차원
+        self.head_dim = self.depth
 
         # layer_id가 0이 아니면 입력 정규화를 적용 (원본 코드에서는 항상 적용함)
         # 여기서는 minimal 구현 단계에서는 layer_id에 관계없이 단순히 Dense 연산을 수행하도록 할 수 있지만,
@@ -62,7 +63,55 @@ class MultiHeadAttention(keras.layers.Layer):
         :return: Tuple containing modified query and key tensors (q_embed, k_embed)
         """
 
-        raise NotImplementedError()
+        # 이 함수는 주어진 텐서를 마지막 차원에서 두 부분으로 분할한 후,
+        # 두 번째 절반의 부호를 반전시키고, 순서를 뒤바꿔서 첫 번째 절반과 결합합니다.
+        # 예를 들어, 입력 벡터가 [x1, x2]라면, 출력은 [-x2, x1]가 됩니다.
+        def _rotate_half(x: tf.Tensor) -> tf.Tensor:
+            # 마지막 차원(axis=-1)을 두 개의 동일한 크기의 텐서로 분할합니다.
+            x1, x2 = tf.split(value=x, num_or_size_splits=2, axis=-1)
+
+            # x2의 부호를 반전한 후, x1과 함께 이어 붙입니다.
+            # Q: 왜 마지막 차원을 분할하냐?
+            # Transformer에서는 각 토큰마다 하나의 임베딩 벡터가 있으며
+            # MultiHeadAttention에서는 각 헤드마다 그 벡터의 일부(즉, head_dim)를 사용합니다.
+            # 이 마지막 차원이 실제 피처(특징)들이 담긴 부분이기 때문에, 여기서 정보를 반으로 나누어 회전 변환을 적용하는 것이 자연스럽습니다.
+            return tf.concat([-x2, x1], axis=-1)
+
+        # 여기서 cos, sin은 원래 [seq_len, 2 * head_dim] 형태일 수 있습니다.
+        # reshape을 통해 [1, 1, seq_len, head_dim] 형태로 바꿉니다.
+        #  - 첫 번째 1: 배치 차원에 대해 확장 (모든 배치에 동일한 값을 사용)
+        #  - 두 번째 1: 헤드 차원에 대해 확장 (모든 헤드에 동일하게 적용)
+        #  - -1: seq_len을 그대로 유지
+        #  - self.head_dim: 마지막 차원은 각 헤드의 차원 크기
+        num_heads, seq_len, head_dim = 1, 1, -1
+
+        cos = tf.reshape(cos, [num_heads, seq_len, head_dim, self.head_dim])
+        sin = tf.reshape(sin, [num_heads, seq_len, head_dim, self.head_dim])
+
+        # 위의 reshape 후, cos와 sin은 [1, 1, 2 * seq_len, head_dim]의 shape를 가지게 됩니다.
+        # 하지만 실제로 적용할 때는 query q와 key k의 시퀀스 길이에 맞춰야 하므로,
+        # 필요한 부분만 슬라이싱하여 [1, 1, seq_len, head_dim]의 shape로 맞춥니다.
+        cos = tf.reshape(cos, [1, 1, -1, self.head_dim])
+        sin = tf.reshape(sin, [1, 1, -1, self.head_dim])
+
+        # tf.shape(q)[2]는 q 텐서의 세 번째 차원, 즉 시퀀스 길이 S를 나타냅니다.
+        # 첫 번째와 두 번째 차원은 그대로 유지하고, 세 번째 차원에서 처음 seq_len (즉, tf.shape(q)[2]) 개의 값만 선택합니다.
+        cos = cos[:, :, :tf.shape(q)[2], :]
+        sin = sin[:, :, :tf.shape(q)[2], :]
+
+        # 이제 rotary positional embedding을 적용합니다.
+        # 각 query 벡터에 대해, cosine 값과 sine 값을 사용하여 회전 변환을 수행합니다.
+        # 공식은 다음과 같습니다:
+        #   q_embed = (q * cos) + (rotate_half(q) * sin)
+        # 이는, 각 원소를 두 부분으로 나누고, 이 두 부분에 대해 회전 행렬의 효과를 벡터화한 형태라고 볼 수 있습니다.
+        q_embed = (q * cos) + (_rotate_half(q) * sin)
+
+        # 동일하게, key 벡터에도 같은 변환을 적용합니다.
+        k_embed = (k * cos) + (_rotate_half(k) * sin)
+
+        # 최종적으로, 변환된 query와 key 텐서를 반환합니다.
+        return q_embed, k_embed
+
 
     def scaled_dot_product_attention(
         self,
